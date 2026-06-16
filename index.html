@@ -173,7 +173,7 @@ td input[type="number"],td input[type="text"]{width:60px;padding:5px 6px;font-si
 /* ════ CAMERA ════ */
 #cameraBox{display:none;text-align:center;background:var(--navy);border-radius:var(--r);padding:14px;margin-bottom:12px}
 .cam-title{color:#fff;font-family:'Syne',sans-serif;font-size:12px;font-weight:700;margin-bottom:10px}
-#video{border-radius:10px;border:2px solid rgba(255,255,255,.2);width:100%;max-width:300px}
+#video{border-radius:10px;border:2px solid rgba(255,255,255,.2);width:100%;max-width:300px;transform:scaleX(-1)}
 #canvas{display:none}
 #preview{margin-top:10px}
 #preview img{border-radius:10px;border:3px solid var(--green);max-width:180px}
@@ -995,6 +995,45 @@ function onBarcodeFound(rawCode) {
     });
 }
 
+/* ════ FUZZY MATCH HELPERS ════
+   Stock Sheet variant names and Spare/Allocation/SDB "Material" names often
+   differ slightly in formatting (spacing, "/P" suffixes, case, punctuation).
+   To make scanning reliably tick off the loaded list, we normalize both
+   sides aggressively (strip all non-alphanumeric characters, lowercase)
+   and try several increasingly loose match strategies before giving up. */
+function normalizeLoose(v){
+  return String(v||"").trim().toLowerCase().replace(/[^a-z0-9]/g,"");
+}
+/* Finds the matching key in the currently loaded `items` map for a scanned
+   variant name. Tries: exact vKey match, then loose normalized exact match,
+   then loose "starts with" / "contains" in either direction (handles
+   "/P" suffixes or trailing codes that differ between sheets). */
+function findLoadedItemKey(scannedVariant){
+  const exactKey = vKey(scannedVariant);
+  if(items[exactKey]) return exactKey;
+
+  const loose = normalizeLoose(scannedVariant);
+  if(!loose) return null;
+
+  const keys = Object.keys(items);
+
+  // 1) loose exact match
+  for(let i=0;i<keys.length;i++){
+    if(normalizeLoose(items[keys[i]].variant) === loose) return keys[i];
+  }
+  // 2) one contains the other (handles "/P" suffix or short code differences)
+  for(let i=0;i<keys.length;i++){
+    const lk = normalizeLoose(items[keys[i]].variant);
+    if(lk && (lk.indexOf(loose)===0 || loose.indexOf(lk)===0)) return keys[i];
+  }
+  // 3) substring match either direction (loosest fallback)
+  for(let i=0;i<keys.length;i++){
+    const lk = normalizeLoose(items[keys[i]].variant);
+    if(lk && (lk.indexOf(loose)!==-1 || loose.indexOf(lk)!==-1)) return keys[i];
+  }
+  return null;
+}
+
 /* ════ CORE: APPLY A SCANNED VARIANT AGAINST THE LOADED ITEMS LIST ════
    - If variant not in list at all          -> error popup, no change
    - If variant in list but already balance=0 -> error popup ("already filled")
@@ -1008,8 +1047,8 @@ function handleScannedVariant(variant, addQty, feedbackElId){
     if(feedbackElId) document.getElementById(feedbackElId).textContent="⚠ No items loaded";
     return;
   }
-  const k = vKey(variant);
-  const row = items[k];
+  const k = findLoadedItemKey(variant);
+  const row = k ? items[k] : null;
 
   if(!row){
     errorBeep();
@@ -1159,13 +1198,22 @@ function checkFields(){
 /* ════ CAMERA ════ */
 function openCamera(){
   closeSign();
-  navigator.mediaDevices.getUserMedia({video:{facingMode:"environment",width:{ideal:1280},height:{ideal:720}}})
+  navigator.mediaDevices.getUserMedia({video:{facingMode:"user",width:{ideal:1280},height:{ideal:720}}})
     .then(s=>{
       camStream=s;
       document.getElementById("cameraBox").style.display="block";
       document.getElementById("video").srcObject=s;
     })
-    .catch(()=>showToast("Camera access denied — you can use Sign instead","error",3000));
+    .catch(()=>{
+      // Some devices don't have/allow a front camera — fall back to any camera
+      navigator.mediaDevices.getUserMedia({video:{width:{ideal:1280},height:{ideal:720}}})
+        .then(s=>{
+          camStream=s;
+          document.getElementById("cameraBox").style.display="block";
+          document.getElementById("video").srcObject=s;
+        })
+        .catch(()=>showToast("Camera access denied — you can use Sign instead","error",3000));
+    });
 }
 function capturePhoto(){
   const cvs=document.getElementById("canvas"),vid=document.getElementById("video");
