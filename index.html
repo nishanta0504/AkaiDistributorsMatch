@@ -527,46 +527,56 @@ let lastBcTime  = 0;
 let lastQrCode  = "";
 let lastQrTime  = 0;
 
-/* ════ BEEP ════ */
-const beep = (() => {
-  try {
-    const actx = new (window.AudioContext || window.webkitAudioContext)();
-    return () => {
-      try {
-        const t=actx.currentTime, o=actx.createOscillator(), g=actx.createGain();
-        o.connect(g); g.connect(actx.destination);
-        o.type="square";
-        o.frequency.setValueAtTime(1200,t);
-        o.frequency.linearRampToValueAtTime(1800,t+0.08);
-        g.gain.setValueAtTime(0,t);
-        g.gain.linearRampToValueAtTime(0.22,t+0.005);
-        g.gain.setValueAtTime(0.22,t+0.06);
-        g.gain.linearRampToValueAtTime(0,t+0.1);
-        o.start(t); o.stop(t+0.1);
-      } catch(e){}
-    };
-  } catch(e){ return ()=>{}; }
-})();
+/* ════ AUDIO (shared context — resumed on first user gesture so beeps
+   reliably sound on mobile, where contexts start "suspended") ════ */
+let _audioCtx = null;
+function getAudioCtx(){
+  try{
+    if(!_audioCtx) _audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    return _audioCtx;
+  }catch(e){ return null; }
+}
+function unlockAudio(){
+  const ctx=getAudioCtx();
+  if(ctx && ctx.state==="suspended"){ try{ ctx.resume(); }catch(e){} }
+}
+
+/* ════ BEEP (success — bright rising tone) ════ */
+function beep(){
+  const ctx=getAudioCtx();
+  if(!ctx) return;
+  try{
+    if(ctx.state==="suspended") ctx.resume();
+    const t=ctx.currentTime, o=ctx.createOscillator(), g=ctx.createGain();
+    o.connect(g); g.connect(ctx.destination);
+    o.type="square";
+    o.frequency.setValueAtTime(1200,t);
+    o.frequency.linearRampToValueAtTime(1800,t+0.08);
+    g.gain.setValueAtTime(0,t);
+    g.gain.linearRampToValueAtTime(0.22,t+0.005);
+    g.gain.setValueAtTime(0.22,t+0.06);
+    g.gain.linearRampToValueAtTime(0,t+0.1);
+    o.start(t); o.stop(t+0.1);
+  }catch(e){}
+}
 
 /* ════ ERROR BEEP (distinct, lower tone) ════ */
-const errorBeep = (() => {
-  try {
-    const actx = new (window.AudioContext || window.webkitAudioContext)();
-    return () => {
-      try {
-        const t=actx.currentTime, o=actx.createOscillator(), g=actx.createGain();
-        o.connect(g); g.connect(actx.destination);
-        o.type="sawtooth";
-        o.frequency.setValueAtTime(280,t);
-        g.gain.setValueAtTime(0,t);
-        g.gain.linearRampToValueAtTime(0.18,t+0.01);
-        g.gain.setValueAtTime(0.18,t+0.12);
-        g.gain.linearRampToValueAtTime(0,t+0.18);
-        o.start(t); o.stop(t+0.18);
-      } catch(e){}
-    };
-  } catch(e){ return ()=>{}; }
-})();
+function errorBeep(){
+  const ctx=getAudioCtx();
+  if(!ctx) return;
+  try{
+    if(ctx.state==="suspended") ctx.resume();
+    const t=ctx.currentTime, o=ctx.createOscillator(), g=ctx.createGain();
+    o.connect(g); g.connect(ctx.destination);
+    o.type="sawtooth";
+    o.frequency.setValueAtTime(280,t);
+    g.gain.setValueAtTime(0,t);
+    g.gain.linearRampToValueAtTime(0.18,t+0.01);
+    g.gain.setValueAtTime(0.18,t+0.12);
+    g.gain.linearRampToValueAtTime(0,t+0.18);
+    o.start(t); o.stop(t+0.18);
+  }catch(e){}
+}
 
 /* ════ DATE DISPLAY HELPER ════ */
 function fmtDate(d){
@@ -838,6 +848,7 @@ function matchByDealer(dealer){
 
 /* ════ QR SCANNER ════ */
 function openQRScanner() {
+  unlockAudio();
   document.getElementById("readerBox").style.display="block";
   if(qrScanning) return;
   qrScanner = new Html5Qrcode("reader",{verbose:false});
@@ -903,6 +914,7 @@ async function initBarcodeDetector() {
 
 /* ════ BARCODE SCANNER OPEN/CLOSE ════ */
 async function openBCScanner() {
+  unlockAudio();
   const box = document.getElementById("bcBox");
   box.style.display="block";
   if(bcStream) return;
@@ -966,7 +978,10 @@ async function bcDecodeFrame() {
   }
 }
 
-/* ════ ON BARCODE FOUND ════ */
+/* ════ ON BARCODE FOUND — Spare Part Mode ════
+   FAST PATH: strip //1 //5 //10 suffix (suffix = qty to add), then match the
+   cleaned barcode value DIRECTLY against the variant names in the loaded
+   website list. No Stock Sheet / network lookup — instant. */
 function onBarcodeFound(rawCode) {
   const fl=document.getElementById("bcFlash");
   fl.classList.add("pop"); setTimeout(()=>fl.classList.remove("pop"),100);
@@ -976,23 +991,8 @@ function onBarcodeFound(rawCode) {
   const cleanCode = parsed.code;
   const addQty = parsed.qty;
   document.getElementById("bcFeedback").textContent="🔍 "+cleanCode.substring(0,22)+"…";
-  lookupUID(cleanCode)
-    .then(data=>{
-      if(!data||!data.variant){
-        errorBeep();
-        showToast("Not found: "+cleanCode.substring(0,16),"error",2500);
-        document.getElementById("bcFeedback").textContent="❌ Not found: "+cleanCode.substring(0,18);
-        lastBcTime = Date.now() - SAME_CODE_COOLDOWN + 3000;
-      } else {
-        handleScannedVariant(data.variant, addQty, "bcFeedback");
-      }
-    })
-    .catch(()=>{
-      errorBeep();
-      showToast("Lookup error","error");
-      document.getElementById("bcFeedback").textContent="❌ Lookup error";
-      lastBcTime=0;
-    });
+  // Match the cleaned barcode value straight against the loaded variant list.
+  handleScannedVariant(cleanCode, addQty, "bcFeedback");
 }
 
 /* ════ FUZZY MATCH HELPERS ════
