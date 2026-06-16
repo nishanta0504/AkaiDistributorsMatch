@@ -503,7 +503,10 @@ const API_URL = "https://script.google.com/macros/s/AKfycbxXKW92Jb1DebvH7Vy5r6MX
 
 /* ════ STATE ════ */
 let items        = {};     // key = variant (lowercased) -> {variant, qty, physical, balance, rowIndex, col, transit}
-let completedRows = [];    // Allocation: rows fully scanned THIS pass (to clear their highlight on submit)
+let completedRows = [];    // rows fully scanned THIS pass (to clear their highlight on submit)
+let cappedFinishedRows = []; // Allocation: capped rows whose shown qty is fully punched, but
+                              // must STAY blue+bracket on submit (never cleared) since the
+                              // true dealer number exceeds what the website shows.
 let qrScanner     = null;
 let qrScanning    = false;
 let photoData     = "";
@@ -671,6 +674,7 @@ function selectSheet(sheet){
   // Reset entered items/fields when switching sheets to avoid mixing data
   items = {};
   completedRows = [];
+  cappedFinishedRows = [];
   itemsLoaded = false;
   // Show the Transit column only in Allocation mode
   const showTransit = (sheet === "allocation");
@@ -818,9 +822,9 @@ function matchByInvoice(sheetKey, invoice, date){
       if(!Array.isArray(data) || data.error){ showToast(data&&data.error?data.error:"Lookup failed","error"); return; }
       if(data.length===0){
         showToast(onlyHl==="1" ? "No highlighted (leftover) rows for this invoice" : "No items found for this invoice","warning",3200);
-        items = {}; completedRows = []; itemsLoaded = false; render(); return;
+        items = {}; completedRows = []; cappedFinishedRows = []; itemsLoaded = false; render(); return;
       }
-      items = {}; completedRows = [];
+      items = {}; completedRows = []; cappedFinishedRows = [];
       data.forEach(row=>{
         const k = vKey(row.variant);
         items[k] = {
@@ -850,7 +854,7 @@ function matchByDealer(dealer){
         showToast(onlyHl==="1" ? "No highlighted (leftover) rows for this dealer" : "No items found for this dealer","warning",3200);
         items = {}; itemsLoaded = false; render(); return;
       }
-      items = {}; completedRows = [];
+      items = {}; completedRows = []; cappedFinishedRows = [];
       data.forEach(row=>{
         const k = vKey(row.variant);
         items[k] = {
@@ -1105,15 +1109,33 @@ function handleScannedVariant(variant, addQty, feedbackElId){
   showToast(row.variant+" "+row.physical+"/"+row.qty,"success",1500);
 
   if(row.balance <= 0){
-    // Record completed row so submit can CLEAR its highlight in the sheet
-    // (only meaningful for Allocation; harmless otherwise).
-    completedRows.push({
-      variant : row.variant,
-      rowIndex: row.rowIndex,
-      col     : row.col
-    });
-    delete items[k];
-    showToast("✔ "+variant+" complete — removed from list","success",1800);
+    if(row.capped){
+      // Capped row (dealer# > column C): the website's capped view is now
+      // fully punched, but the TRUE dealer number is larger than what's
+      // shown here. This must stay BLUE in the sheet with the full
+      // cumulative bracket (e.g. dealer=4, cap=3, all 3 punched -> "4 (3)"),
+      // NOT cleared like a normal completion.
+      cappedFinishedRows.push({
+        variant     : row.variant,
+        qty         : row.qty,
+        physical    : row.physical,
+        capped      : true,
+        alreadyFound: row.alreadyFound||0,
+        rowIndex    : row.rowIndex,
+        col         : row.col
+      });
+      delete items[k];
+      showToast("✔ "+variant+" capped qty reached — stays flagged blue in sheet","success",2000);
+    } else {
+      // Normal completion: record so submit CLEARS its highlight in the sheet.
+      completedRows.push({
+        variant : row.variant,
+        rowIndex: row.rowIndex,
+        col     : row.col
+      });
+      delete items[k];
+      showToast("✔ "+variant+" complete — removed from list","success",1800);
+    }
   }
   render();
 }
@@ -1476,10 +1498,20 @@ function submitData(){
     alreadyFound: i.alreadyFound||0,
     rowIndex: i.rowIndex,
     col     : i.col
-  }));
+  })).concat(cappedFinishedRows.map(r=>({
+    variant : r.variant,
+    qty     : r.qty,
+    physical: r.physical,
+    capped  : true,
+    alreadyFound: r.alreadyFound||0,
+    rowIndex: r.rowIndex,
+    col     : r.col
+  })));
 
   // completedRows = rows fully scanned this pass; used by ALL sheets to clear
-  // their previous highlight so a re-search narrows down correctly.
+  // their previous highlight so a re-search narrows down correctly. Capped
+  // rows are NEVER in this list — they go through highlightPayload instead
+  // so they stay BLUE with the cumulative bracket.
   const completedPayload = completedRows.map(r=>({
     variant : r.variant, rowIndex: r.rowIndex, col: r.col
   }));
@@ -1498,21 +1530,26 @@ function submitData(){
     try{data=JSON.parse(text);}catch{throw new Error("Invalid server response");}
     if(data.status!=="success") throw new Error(data.message||"Server error");
 
-    // Download local report regardless of how many remain
-    setTimeout(()=>downloadBill(remainingSnapshot), 50);
+    // Download local report regardless of how many remain. Capped rows that
+    // finished their shown qty still count as "outstanding" (true dealer
+    // number wasn't fully met), so include them in the report + completion check.
+    const reportSnapshot = remainingSnapshot.concat(cappedFinishedRows);
+    setTimeout(()=>downloadBill(reportSnapshot), 50);
 
-    if(remainingSnapshot.length===0){
+    const trulyDone = (remainingSnapshot.length===0 && cappedFinishedRows.length===0);
+    if(trulyDone){
       showToast("All items fully scanned and submitted!","success",4000);
       setTimeout(()=>{
         document.getElementById("invoiceInput").value="";
         document.getElementById("dealerInput").value="";
-        items={}; completedRows=[]; itemsLoaded=false; render();
+        items={}; completedRows=[]; cappedFinishedRows=[]; itemsLoaded=false; render();
         document.getElementById("preview").innerHTML="";
         resetConfirm();
         goPage(1);
       },1600);
     } else {
-      showToast("⚠ "+remainingSnapshot.length+" variant(s) left — highlighted in sheet.","warning",5000);
+      const leftCount = remainingSnapshot.length + cappedFinishedRows.length;
+      showToast("⚠ "+leftCount+" variant(s) left/flagged — highlighted in sheet.","warning",5000);
       setTimeout(()=>goPage(1),2200);
     }
   })
