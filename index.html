@@ -828,6 +828,7 @@ function matchByInvoice(sheetKey, invoice, date){
           qty     : Number(row.qty)||0,
           physical: 0,
           balance : Number(row.qty)||0,
+          alreadyFound: Number(row.alreadyFound)||0,
           rowIndex: row.rowIndex
         };
       });
@@ -859,6 +860,7 @@ function matchByDealer(dealer){
           balance : Number(row.qty)||0,
           transit : Number(row.transit)||0,
           capped  : !!row.capped,
+          alreadyFound: Number(row.alreadyFound)||0,
           rowIndex: row.rowIndex,
           col     : row.col
         };
@@ -1136,9 +1138,12 @@ function render() {
     const i=items[key];
     const q=Number(i.qty)||0, p=Number(i.physical)||0, b=Number(i.balance)||0, tr=Number(i.transit)||0;
     tq+=q; tp+=p; tb+=b; ttr+=tr;
-    // Green tint when partially punched (some physical, but not complete)
+    // Website row tint: GREEN if partially punched (some physical, not done);
+    // BLUE if allocation capped row. Applies to all sheets for green.
     const partial = (p>0 && b>0);
-    const rowStyle = (isAlloc && partial) ? ' style="background:rgba(165,214,167,.28)"' : "";
+    let rowStyle = "";
+    if (isAlloc && i.capped) rowStyle = ' style="background:rgba(144,202,249,.30)"';      // blue
+    else if (partial)        rowStyle = ' style="background:rgba(165,214,167,.32)"';      // green
     const chipClass = b<=0 ? "zero" : "pos";
     const transitCell = isAlloc ? `<td>${tr}</td>` : "";
     html+=`<tr${rowStyle}>
@@ -1455,18 +1460,20 @@ function submitData(){
     balance : i.balance,
     transit : i.transit||0,
     capped  : !!i.capped,
+    alreadyFound: i.alreadyFound||0,
     rowIndex: i.rowIndex,
     col     : i.col
   }));
 
-  // For Allocation the script picks BLUE (capped: qty>colC, priority), else
-  // GREEN (partial) or ORANGE (nothing punched), and writes the "(physical)"
-  // bracket into the dealer cell.
+  // Colors (all sheets): ORANGE=nothing found, GREEN=partial, BLUE=allocation
+  // capped (qty>colC, priority). Bracket shows cumulative found (this pass +
+  // previously found), e.g. (2) = 1 before + 1 now.
   const highlightPayload = remainingSnapshot.map(i=>({
     variant : i.variant,
     qty     : i.qty,
     physical: i.physical,
     capped  : !!i.capped,
+    alreadyFound: i.alreadyFound||0,
     rowIndex: i.rowIndex,
     col     : i.col
   }));
