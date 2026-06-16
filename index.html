@@ -329,6 +329,12 @@ td input[type="number"],td input[type="text"]{width:60px;padding:5px 6px;font-si
       </div>
     </div>
 
+    <!-- Shared: re-search showing only previously-highlighted (leftover) rows -->
+    <label style="display:flex;align-items:center;gap:8px;font-size:12px;color:var(--text);font-weight:500;cursor:pointer;margin-bottom:4px;background:#f8faff;border:1.5px solid var(--border);border-radius:8px;padding:9px 11px">
+      <input type="checkbox" id="onlyHighlighted" style="width:16px;height:16px;flex:0 0 auto">
+      <span>Show only previously-highlighted (leftover) rows</span>
+    </label>
+
     <button class="btn btn-primary" style="width:100%;margin-top:4px" onclick="performMatch()" id="matchBtn">
       <svg width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35"/></svg>
       Load Items
@@ -396,10 +402,11 @@ td input[type="number"],td input[type="text"]{width:60px;padding:5px 6px;font-si
             <th>Qty</th>
             <th>Physical</th>
             <th>Balance</th>
+            <th id="transitHead" style="display:none">Transit</th>
           </tr>
         </thead>
         <tbody id="tbody">
-          <tr><td colspan="4"><div class="empty-state"><svg width="36" height="36" fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24"><rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8M12 17v4"/></svg><p>No items loaded yet.<br>Select a sheet, enter invoice/dealer and tap "Load Items".</p></div></td></tr>
+          <tr><td colspan="5"><div class="empty-state"><svg width="36" height="36" fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24"><rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8M12 17v4"/></svg><p>No items loaded yet.<br>Select a sheet, enter invoice/dealer and tap "Load Items".</p></div></td></tr>
         </tbody>
         <tfoot>
           <tr class="tfoot-row">
@@ -407,6 +414,7 @@ td input[type="number"],td input[type="text"]{width:60px;padding:5px 6px;font-si
             <td id="tQty">0</td>
             <td id="tPhysical">0</td>
             <td id="tBalance">0</td>
+            <td id="tTransit" style="display:none">0</td>
           </tr>
         </tfoot>
       </table>
@@ -494,7 +502,8 @@ td input[type="number"],td input[type="text"]{width:60px;padding:5px 6px;font-si
 const API_URL = "https://script.google.com/macros/s/AKfycbxXKW92Jb1DebvH7Vy5r6MXxq1O-4-aD88nd_JxaPy7tf0D6EDt81SXdNOv89dcbVco6w/exec";
 
 /* ════ STATE ════ */
-let items        = {};     // key = variant (lowercased) -> {variant, qty, physical, balance, rowIndex, col}
+let items        = {};     // key = variant (lowercased) -> {variant, qty, physical, balance, rowIndex, col, transit}
+let completedRows = [];    // Allocation: rows fully scanned THIS pass (to clear their highlight on submit)
 let qrScanner     = null;
 let qrScanning    = false;
 let photoData     = "";
@@ -661,7 +670,12 @@ function selectSheet(sheet){
 
   // Reset entered items/fields when switching sheets to avoid mixing data
   items = {};
+  completedRows = [];
   itemsLoaded = false;
+  // Show the Transit column only in Allocation mode
+  const showTransit = (sheet === "allocation");
+  document.getElementById("transitHead").style.display = showTransit ? "" : "none";
+  document.getElementById("tTransit").style.display = showTransit ? "" : "none";
   render();
   document.getElementById("invoiceInput").value = "";
   document.getElementById("dealerInput").value = "";
@@ -796,13 +810,17 @@ function performMatch(){
 }
 function matchByInvoice(sheetKey, invoice, date){
   document.getElementById("matchBtn").disabled = true;
-  fetch(API_URL+"?type=matchinvoice&sheet="+encodeURIComponent(sheetKey)+"&invoice="+encodeURIComponent(invoice)+"&date="+encodeURIComponent(date||""))
+  const onlyHl = document.getElementById("onlyHighlighted").checked ? "1" : "0";
+  fetch(API_URL+"?type=matchinvoice&sheet="+encodeURIComponent(sheetKey)+"&invoice="+encodeURIComponent(invoice)+"&date="+encodeURIComponent(date||"")+"&onlyHighlighted="+onlyHl)
     .then(r=>r.json())
     .then(data=>{
       document.getElementById("matchBtn").disabled = false;
       if(!Array.isArray(data) || data.error){ showToast(data&&data.error?data.error:"Lookup failed","error"); return; }
-      if(data.length===0){ showToast("No items found for this invoice","warning",3000); return; }
-      items = {};
+      if(data.length===0){
+        showToast(onlyHl==="1" ? "No highlighted (leftover) rows for this invoice" : "No items found for this invoice","warning",3200);
+        items = {}; completedRows = []; itemsLoaded = false; render(); return;
+      }
+      items = {}; completedRows = [];
       data.forEach(row=>{
         const k = vKey(row.variant);
         items[k] = {
@@ -821,13 +839,17 @@ function matchByInvoice(sheetKey, invoice, date){
 }
 function matchByDealer(dealer){
   document.getElementById("matchBtn").disabled = true;
-  fetch(API_URL+"?type=matchdealer&dealer="+encodeURIComponent(dealer))
+  const onlyHl = document.getElementById("onlyHighlighted").checked ? "1" : "0";
+  fetch(API_URL+"?type=matchdealer&dealer="+encodeURIComponent(dealer)+"&onlyHighlighted="+onlyHl)
     .then(r=>r.json())
     .then(data=>{
       document.getElementById("matchBtn").disabled = false;
       if(!Array.isArray(data) || data.error){ showToast(data&&data.error?data.error:"Lookup failed","error"); return; }
-      if(data.length===0){ showToast("No items found for this dealer","warning",3000); return; }
-      items = {};
+      if(data.length===0){
+        showToast(onlyHl==="1" ? "No highlighted (leftover) rows for this dealer" : "No items found for this dealer","warning",3200);
+        items = {}; itemsLoaded = false; render(); return;
+      }
+      items = {}; completedRows = [];
       data.forEach(row=>{
         const k = vKey(row.variant);
         items[k] = {
@@ -835,6 +857,8 @@ function matchByDealer(dealer){
           qty     : Number(row.qty)||0,
           physical: 0,
           balance : Number(row.qty)||0,
+          transit : Number(row.transit)||0,
+          capped  : !!row.capped,
           rowIndex: row.rowIndex,
           col     : row.col
         };
@@ -1079,6 +1103,13 @@ function handleScannedVariant(variant, addQty, feedbackElId){
   showToast(row.variant+" "+row.physical+"/"+row.qty,"success",1500);
 
   if(row.balance <= 0){
+    // Record completed row so submit can CLEAR its highlight in the sheet
+    // (only meaningful for Allocation; harmless otherwise).
+    completedRows.push({
+      variant : row.variant,
+      rowIndex: row.rowIndex,
+      col     : row.col
+    });
     delete items[k];
     showToast("✔ "+variant+" complete — removed from list","success",1800);
   }
@@ -1088,27 +1119,34 @@ function handleScannedVariant(variant, addQty, feedbackElId){
 /* ════ RENDER TABLE ════ */
 function render() {
   const keys=Object.keys(items);
+  const isAlloc = (activeSheet === "allocation");
+  const colspan = isAlloc ? 5 : 4;
   document.getElementById("itemCount").textContent=keys.length;
   if(keys.length===0){
-    document.getElementById("tbody").innerHTML=`<tr><td colspan="4"><div class="empty-state"><svg width="34" height="34" fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24"><rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8M12 17v4"/></svg><p>No items loaded yet.<br>Select a sheet, enter invoice/dealer and tap "Load Items".</p></div></td></tr>`;
+    document.getElementById("tbody").innerHTML=`<tr><td colspan="${colspan}"><div class="empty-state"><svg width="34" height="34" fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24"><rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8M12 17v4"/></svg><p>No items loaded yet.<br>Select a sheet, enter invoice/dealer and tap "Load Items".</p></div></td></tr>`;
     document.getElementById("tQty").textContent="0";
     document.getElementById("tPhysical").textContent="0";
     document.getElementById("tBalance").textContent="0";
     document.getElementById("tQtyTop").textContent="0";
+    document.getElementById("tTransit").textContent="0";
     return;
   }
-  let html="",tq=0,tp=0,tb=0;
+  let html="",tq=0,tp=0,tb=0,ttr=0;
   keys.forEach(key=>{
     const i=items[key];
-    const q=Number(i.qty)||0, p=Number(i.physical)||0, b=Number(i.balance)||0;
-    tq+=q; tp+=p; tb+=b;
-    const rowClass = b<=0 ? "balance-zero" : "balance-pos";
+    const q=Number(i.qty)||0, p=Number(i.physical)||0, b=Number(i.balance)||0, tr=Number(i.transit)||0;
+    tq+=q; tp+=p; tb+=b; ttr+=tr;
+    // Green tint when partially punched (some physical, but not complete)
+    const partial = (p>0 && b>0);
+    const rowStyle = (isAlloc && partial) ? ' style="background:rgba(165,214,167,.28)"' : "";
     const chipClass = b<=0 ? "zero" : "pos";
-    html+=`<tr class="${rowClass}">
+    const transitCell = isAlloc ? `<td>${tr}</td>` : "";
+    html+=`<tr${rowStyle}>
       <td style="text-align:left;font-weight:500;font-size:12px">${i.variant}</td>
       <td><b>${q}</b></td>
       <td>${p}</td>
       <td><span class="bal-chip ${chipClass}">${b}</span></td>
+      ${transitCell}
     </tr>`;
   });
   document.getElementById("tbody").innerHTML=html;
@@ -1116,6 +1154,7 @@ function render() {
   document.getElementById("tPhysical").textContent=tp;
   document.getElementById("tBalance").textContent=tb;
   document.getElementById("tQtyTop").textContent=tq;
+  document.getElementById("tTransit").textContent=ttr;
 }
 
 /* ════ TOAST ════ */
@@ -1324,8 +1363,9 @@ function downloadBill(allItemsSnapshot){
   const time=new Date().toLocaleTimeString("en-IN");
   const photoSnap=photoData, typeSnap=confirmType;
 
-  let tq=0,tp=0,tb=0;
-  allItemsSnapshot.forEach(i=>{ tq+=Number(i.qty)||0; tp+=Number(i.physical)||0; tb+=Number(i.balance)||0; });
+  let tq=0,tp=0,tb=0,ttr=0;
+  allItemsSnapshot.forEach(i=>{ tq+=Number(i.qty)||0; tp+=Number(i.physical)||0; tb+=Number(i.balance)||0; ttr+=Number(i.transit)||0; });
+  const isAllocReport = (activeSheet==="allocation");
 
   const PER_PAGE=30;
   const pages=[];
@@ -1336,8 +1376,9 @@ function downloadBill(allItemsSnapshot){
   function buildPageHtml(pageItems, pageIndex){
     let rows="";
     pageItems.forEach(i=>{
-      const q=Number(i.qty)||0, p=Number(i.physical)||0, b=Number(i.balance)||0;
-      rows+=`<tr><td style="padding:8px 10px;border-bottom:1px solid #e2e8f0;text-align:left;font-size:13px">${i.variant}</td><td style="padding:8px 10px;border-bottom:1px solid #e2e8f0;text-align:center;font-size:13px">${q}</td><td style="padding:8px 10px;border-bottom:1px solid #e2e8f0;text-align:center;font-size:13px">${p}</td><td style="padding:8px 10px;border-bottom:1px solid #e2e8f0;text-align:center;font-size:13px;font-weight:700">${b}</td></tr>`;
+      const q=Number(i.qty)||0, p=Number(i.physical)||0, b=Number(i.balance)||0, tr=Number(i.transit)||0;
+      const transitTd = isAllocReport ? `<td style="padding:8px 10px;border-bottom:1px solid #e2e8f0;text-align:center;font-size:13px">${tr}</td>` : "";
+      rows+=`<tr><td style="padding:8px 10px;border-bottom:1px solid #e2e8f0;text-align:left;font-size:13px">${i.variant}</td><td style="padding:8px 10px;border-bottom:1px solid #e2e8f0;text-align:center;font-size:13px">${q}</td><td style="padding:8px 10px;border-bottom:1px solid #e2e8f0;text-align:center;font-size:13px">${p}</td><td style="padding:8px 10px;border-bottom:1px solid #e2e8f0;text-align:center;font-size:13px;font-weight:700">${b}</td>${transitTd}</tr>`;
     });
     const isLast=(pageIndex===totalPages-1);
     const pageBadge=(totalPages>1)?`<div style="background:rgba(255,255,255,.12);border:1px solid rgba(255,255,255,.25);border-radius:16px;padding:4px 12px;font-size:11px;font-weight:700;color:#fff;white-space:nowrap">Page ${pageIndex+1} of ${totalPages}</div>`:"";
@@ -1358,6 +1399,7 @@ function downloadBill(allItemsSnapshot){
         <th style="padding:9px 10px;text-align:center;font-size:10px;color:#64748b;text-transform:uppercase;letter-spacing:.7px;border-bottom:2px solid #d1daf7">Qty</th>
         <th style="padding:9px 10px;text-align:center;font-size:10px;color:#64748b;text-transform:uppercase;letter-spacing:.7px;border-bottom:2px solid #d1daf7">Physical</th>
         <th style="padding:9px 10px;text-align:center;font-size:10px;color:#64748b;text-transform:uppercase;letter-spacing:.7px;border-bottom:2px solid #d1daf7">Balance</th>
+        ${isAllocReport ? `<th style="padding:9px 10px;text-align:center;font-size:10px;color:#64748b;text-transform:uppercase;letter-spacing:.7px;border-bottom:2px solid #d1daf7">Transit</th>` : ""}
       </tr></thead>
       <tbody>${rows}</tbody>
       <tfoot><tr style="background:linear-gradient(90deg,#dbeafe,#eff6ff)">
@@ -1365,6 +1407,7 @@ function downloadBill(allItemsSnapshot){
         <td style="padding:9px 10px;text-align:center;font-weight:800;font-size:13px">${tq}</td>
         <td style="padding:9px 10px;text-align:center;font-weight:800;font-size:13px">${tp}</td>
         <td style="padding:9px 10px;text-align:center;font-weight:800;font-size:13px">${tb}</td>
+        ${isAllocReport ? `<td style="padding:9px 10px;text-align:center;font-weight:800;font-size:13px">${ttr}</td>` : ""}
       </tr></tfoot>
     </table>
     ${(isLast && photoSnap)?`<div style="margin-top:14px;text-align:center"><div style="font-size:9px;color:#64748b;text-transform:uppercase;letter-spacing:.7px;margin-bottom:5px">${typeSnap==="sign"?"Signature":"Confirmation Photo"}</div><img src="${photoSnap}" style="max-width:${typeSnap==="sign"?"220":"140"}px;border-radius:7px;border:2px solid #10b981"></div>`:""}
@@ -1392,36 +1435,54 @@ function downloadBill(allItemsSnapshot){
 }
 
 /* ════ SUBMIT ════
-   Highlights all REMAINING (still-listed, i.e. not-yet-fully-scanned) items
-   back in the source sheet with the sheet's color, then downloads the
-   physical/balance report locally. No backend writes other than the
-   highlight call — Spare/Allocation/SDB stay otherwise untouched (read-only). */
+   Spare/SDB: highlight column E of leftover rows (red / purple).
+   Allocation: highlight leftover dealer cells — GREEN if partially punched,
+   ORANGE if nothing punched, BLUE if a transit row — and write "qty (physical)"
+   into the dealer cell. Rows fully scanned this pass have their highlight
+   CLEARED so re-search narrows down. All sheet writes are batched server-side
+   (fixes the "stops after 2 entries" issue). Then a local report downloads. */
 function submitData(){
   if(!checkFields()) return;
   document.getElementById("processingOverlay").classList.add("active");
   document.getElementById("submitBtn").disabled=true;
+
+  const isAlloc = (activeSheet === "allocation");
 
   const remainingSnapshot = Object.values(items).map(i=>({
     variant : i.variant,
     qty     : i.qty,
     physical: i.physical,
     balance : i.balance,
+    transit : i.transit||0,
+    capped  : !!i.capped,
     rowIndex: i.rowIndex,
     col     : i.col
   }));
 
+  // For Allocation the script picks BLUE (capped: qty>colC, priority), else
+  // GREEN (partial) or ORANGE (nothing punched), and writes the "(physical)"
+  // bracket into the dealer cell.
   const highlightPayload = remainingSnapshot.map(i=>({
     variant : i.variant,
     qty     : i.qty,
+    physical: i.physical,
+    capped  : !!i.capped,
     rowIndex: i.rowIndex,
     col     : i.col
+  }));
+
+  // completedRows = rows fully scanned this pass; used by ALL sheets to clear
+  // their previous highlight so a re-search narrows down correctly.
+  const completedPayload = completedRows.map(r=>({
+    variant : r.variant, rowIndex: r.rowIndex, col: r.col
   }));
 
   fetch(API_URL,{
     method:"POST",
     body:new URLSearchParams({data:JSON.stringify({
       sheetType : activeSheet,
-      remaining : highlightPayload
+      remaining : highlightPayload,
+      completed : completedPayload
     })})
   })
   .then(async res=>{
@@ -1438,13 +1499,13 @@ function submitData(){
       setTimeout(()=>{
         document.getElementById("invoiceInput").value="";
         document.getElementById("dealerInput").value="";
-        items={}; itemsLoaded=false; render();
+        items={}; completedRows=[]; itemsLoaded=false; render();
         document.getElementById("preview").innerHTML="";
         resetConfirm();
         goPage(1);
       },1600);
     } else {
-      showToast("⚠ "+remainingSnapshot.length+" variant(s) left unscanned — highlighted in sheet.","warning",5000);
+      showToast("⚠ "+remainingSnapshot.length+" variant(s) left — highlighted in sheet.","warning",5000);
       setTimeout(()=>goPage(1),2200);
     }
   })
