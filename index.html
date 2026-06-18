@@ -150,9 +150,10 @@ select{background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/
 #bcCanvas{display:none}
 
 /* ════ TABLE ════ */
-.table-wrap{overflow-x:auto;border-radius:var(--rs);border:1px solid var(--border)}
+.table-wrap{overflow-x:auto;overflow-y:auto;max-height:340px;border-radius:var(--rs);border:1px solid var(--border)}
 table{width:100%;border-collapse:collapse;font-size:13px}
 thead tr{background:linear-gradient(90deg,#e8eeff,#f0f4ff)}
+.table-wrap thead th{position:sticky;top:0;z-index:2;background:#eef2ff}
 th{padding:9px 10px;text-align:center;font-family:'Syne',sans-serif;font-size:10px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.7px;border-bottom:2px solid var(--border)}
 td{padding:8px 10px;text-align:center;border-bottom:1px solid #eef1fb;vertical-align:middle}
 tbody tr:last-child td{border-bottom:none}
