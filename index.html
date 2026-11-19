@@ -210,6 +210,13 @@ td input[type="number"],td input[type="text"]{width:60px;padding:5px 6px;font-si
 /* ════ BILL ════ */
 #bill{display:none;background:#fff;padding:24px;width:580px;position:fixed;left:-9999px;top:0}
 
+/* ════ MULTI-INVOICE CHIPS (Spare / SDB) ════ */
+.inv-chips{display:flex;flex-wrap:wrap;gap:6px;margin-top:7px}
+.inv-chips:empty{display:none}
+.inv-chip{display:inline-flex;align-items:center;gap:4px;background:#eff6ff;border:1px solid #bfdbfe;color:var(--navy);border-radius:16px;padding:3px 4px 3px 10px;font-size:12px;font-weight:600;max-width:100%;word-break:break-all}
+.inv-chip button{border:none;background:rgba(13,27,62,.08);color:var(--navy);width:20px;height:20px;border-radius:50%;font-size:14px;line-height:1;cursor:pointer;flex-shrink:0}
+.inv-chip button:active{background:var(--red);color:#fff}
+
 /* ════ SCAN MODE BADGE ════ */
 .scan-mode-badge{display:inline-flex;align-items:center;gap:5px;font-size:10px;font-weight:700;border-radius:20px;padding:3px 10px;margin-bottom:8px;letter-spacing:.5px}
 .scan-mode-badge.qr{background:rgba(26,86,219,.08);border:1px solid rgba(26,86,219,.2);color:var(--blue)}
@@ -306,18 +313,16 @@ td input[type="number"],td input[type="text"]{width:60px;padding:5px 6px;font-si
       <span class="sheet-badge spare" id="activeSheetBadge">Spare</span>
     </div>
 
-    <!-- SPARE / SDB fields: Invoice Number + Date -->
+    <!-- SPARE / SDB fields: one or more Invoice Numbers (no date) -->
     <div id="invoiceFields">
-      <div class="row">
-        <div class="field">
-          <label id="invoiceLabel">Invoice Number</label>
-          <input list="invoiceList" id="invoiceInput" placeholder="Type or select invoice no..." autocomplete="off" oninput="onInvoiceInput()">
-          <datalist id="invoiceList"></datalist>
+      <div class="field">
+        <label id="invoiceLabel">Invoice Number(s)</label>
+        <div style="display:flex;gap:8px">
+          <input list="invoiceList" id="invoiceInput" placeholder="Type or select invoice no..." autocomplete="off" oninput="onInvoiceInput(event)" onchange="onInvoiceChange()" onkeydown="onInvoiceKey(event)" style="flex:1;min-width:0">
+          <button type="button" class="btn btn-outline" onclick="addInvoiceFromInput()" style="flex:0 0 auto;padding:11px 14px">+ Add</button>
         </div>
-        <div class="field">
-          <label>Date</label>
-          <input type="date" id="date">
-        </div>
+        <datalist id="invoiceList"></datalist>
+        <div id="invoiceChips" class="inv-chips"></div>
       </div>
     </div>
 
@@ -392,7 +397,7 @@ td input[type="number"],td input[type="text"]{width:60px;padding:5px 6px;font-si
 
   <div class="card">
     <div class="status-bar">
-      <div class="status-label">Items<span class="item-badge" id="itemCount">0</span></div>
+      <div class="status-label">Punched Qty<span class="item-badge" id="punchedCount">0</span></div>
       <div style="font-size:11px;color:var(--muted)">Total Qty: <b id="tQtyTop">0</b></div>
     </div>
     <div class="table-wrap">
@@ -519,6 +524,9 @@ let activeSheet   = "spare";     // "spare" | "allocation" | "sdb"
 let invoiceCache  = { spare: [], sdb: [] };
 let dealerCache   = [];
 let itemsLoaded   = false;
+let selectedInvoices = [];   // Spare/SDB: invoice numbers chosen in the chips
+let loadedInvoices   = [];   // Spare/SDB: invoice numbers of the currently loaded list
+let punchedQty       = 0;    // total qty scanned + matched since the list was loaded
 
 /* ════ BARCODE ENGINE ════ */
 let bcDetector  = null;
@@ -605,16 +613,15 @@ function vKey(v){ return String(v||"").trim().toLowerCase(); }
 /* ════ INIT ════ */
 window.onload = function() {
   const today = new Date();
-  document.getElementById("date").value = today.toISOString().split("T")[0];
   const dd=String(today.getDate()).padStart(2,"0");
   const mm=String(today.getMonth()+1).padStart(2,"0");
   const yyyy=today.getFullYear();
   document.getElementById("headerDate").textContent = dd+"."+mm+"."+yyyy;
 
-  selectSheet("spare");
+  selectSheet("spare");          // also loads the Spare invoice list
   loadStockCache();
   loadDealerList();
-  loadInvoiceList("spare");
+  loadInvoiceList("sdb");        // prefetch SDB list so switching sheets is instant
   initBarcodeDetector();
 
   document.addEventListener("click", e => {
@@ -656,14 +663,16 @@ function selectSheet(sheet){
     sub.textContent = "Match Sheet — Spare";
     document.getElementById("invoiceFields").style.display = "block";
     document.getElementById("dealerFields").style.display  = "none";
-    document.getElementById("invoiceLabel").textContent = "Invoice Number";
-    loadInvoiceList("spare");
+    document.getElementById("invoiceLabel").textContent = "Invoice Number(s)";
+    fillInvoiceDatalist();          // instant from cache (if already loaded)
+    loadInvoiceList("spare");       // refresh in background
   } else if(sheet === "sdb"){
     badge.className = "sheet-badge sdb"; badge.textContent = "SDB";
     sub.textContent = "Match Sheet — SDB";
     document.getElementById("invoiceFields").style.display = "block";
     document.getElementById("dealerFields").style.display  = "none";
-    document.getElementById("invoiceLabel").textContent = "Invoice Number";
+    document.getElementById("invoiceLabel").textContent = "Invoice Number(s)";
+    fillInvoiceDatalist();
     loadInvoiceList("sdb");
   } else {
     badge.className = "sheet-badge allocation"; badge.textContent = "Allocation";
@@ -677,6 +686,10 @@ function selectSheet(sheet){
   completedRows = [];
   cappedFinishedRows = [];
   itemsLoaded = false;
+  punchedQty = 0;
+  selectedInvoices = [];
+  loadedInvoices = [];
+  renderInvoiceChips();
   // Show the Transit column only in Allocation mode
   const showTransit = (sheet === "allocation");
   document.getElementById("transitHead").style.display = showTransit ? "" : "none";
@@ -694,12 +707,72 @@ function loadInvoiceList(sheetKey){
     .then(data=>{
       if(!Array.isArray(data)) return;
       invoiceCache[sheetKey] = data;
-      if(activeSheet === sheetKey){
-        const list=document.getElementById("invoiceList");
-        list.innerHTML="";
-        data.forEach(v=>{const o=document.createElement("option");o.value=v;list.appendChild(o);});
-      }
+      if(activeSheet === sheetKey) fillInvoiceDatalist();
     }).catch(()=>{});
+}
+/* Fills the invoice datalist for the active sheet from cache, filtered by
+   what's typed and skipping invoices already added as chips. */
+function fillInvoiceDatalist(){
+  if(activeSheet === "allocation") return;
+  const key = (activeSheet === "sdb") ? "sdb" : "spare";
+  const list = document.getElementById("invoiceList");
+  const typed = document.getElementById("invoiceInput").value.trim().toLowerCase();
+  const chosen = {};
+  selectedInvoices.forEach(v=>{ chosen[String(v).toLowerCase()] = 1; });
+  let src = (invoiceCache[key] || []).filter(v=>!chosen[String(v).toLowerCase()]);
+  if(typed) src = src.filter(v=>String(v).toLowerCase().indexOf(typed)!==-1).slice(0,40);
+  const frag = document.createDocumentFragment();
+  src.forEach(v=>{ const o=document.createElement("option"); o.value=v; frag.appendChild(o); });
+  list.innerHTML = "";
+  list.appendChild(frag);
+}
+
+/* ════ MULTI-INVOICE SELECTION (Spare / SDB) ════ */
+function escHtml(s){
+  return String(s).replace(/[&<>"']/g, c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+}
+function isKnownInvoice(v){
+  const key = (activeSheet === "sdb") ? "sdb" : "spare";
+  const t = String(v).trim().toLowerCase();
+  return (invoiceCache[key] || []).some(x=>String(x).trim().toLowerCase() === t);
+}
+function addInvoice(v){
+  const val = String(v||"").trim();
+  if(!val) return false;
+  const low = val.toLowerCase();
+  if(selectedInvoices.some(x=>x.toLowerCase() === low)) return false;
+  selectedInvoices.push(val);
+  renderInvoiceChips();
+  return true;
+}
+function removeInvoice(idx){
+  selectedInvoices.splice(idx,1);
+  renderInvoiceChips();
+  fillInvoiceDatalist();
+}
+function renderInvoiceChips(){
+  const box = document.getElementById("invoiceChips");
+  if(!box) return;
+  box.innerHTML = selectedInvoices.map((v,i)=>
+    `<span class="inv-chip">${escHtml(v)}<button type="button" onclick="removeInvoice(${i})" aria-label="Remove">×</button></span>`
+  ).join("");
+}
+function addInvoiceFromInput(){
+  const inp = document.getElementById("invoiceInput");
+  const v = inp.value.trim();
+  if(!v){ showToast("Type or select an invoice number","warning",2000); return; }
+  if(!addInvoice(v)){ showToast("Invoice "+v+" already added","warning",2000); }
+  inp.value = "";
+  fillInvoiceDatalist();
+}
+function onInvoiceChange(){
+  // Picking a suggestion (or leaving the box) with an exact known invoice adds it.
+  const inp = document.getElementById("invoiceInput");
+  const v = inp.value.trim();
+  if(v && isKnownInvoice(v)){ addInvoice(v); inp.value = ""; fillInvoiceDatalist(); }
+}
+function onInvoiceKey(e){
+  if(e.key === "Enter"){ e.preventDefault(); addInvoiceFromInput(); }
 }
 function loadDealerList(){
   fetch(API_URL+"?type=dealerlist")
@@ -712,15 +785,16 @@ function loadDealerList(){
       data.forEach(v=>{const o=document.createElement("option");o.value=v;list.appendChild(o);});
     }).catch(()=>{});
 }
-function onInvoiceInput(){
-  const key = (activeSheet === "sdb") ? "sdb" : "spare";
-  const list = document.getElementById("invoiceList");
-  const typed = document.getElementById("invoiceInput").value.trim().toLowerCase();
-  const source = invoiceCache[key] || [];
-  list.innerHTML = "";
-  source.filter(v=>String(v).toLowerCase().indexOf(typed)!==-1).slice(0,40).forEach(v=>{
-    const o=document.createElement("option");o.value=v;list.appendChild(o);
-  });
+function onInvoiceInput(e){
+  // A suggestion picked from the dropdown arrives as a non-typing input event:
+  // add it as a chip straight away so several invoices can be picked quickly.
+  const inp = document.getElementById("invoiceInput");
+  const picked = e && (e.inputType === undefined || e.inputType === "insertReplacementText");
+  if(picked && inp.value.trim() && isKnownInvoice(inp.value)){
+    addInvoice(inp.value);
+    inp.value = "";
+  }
+  fillInvoiceDatalist();
 }
 function onDealerInput(){
   const list = document.getElementById("dealerList");
@@ -807,39 +881,56 @@ function performMatch(){
     if(!dealer){ showToast("Enter a dealer name","error"); return; }
     matchByDealer(dealer);
   } else {
-    const invoice = document.getElementById("invoiceInput").value.trim();
-    if(!invoice){ showToast("Enter an invoice number","error"); return; }
-    const date = document.getElementById("date").value;
-    matchByInvoice(activeSheet, invoice, date);
+    // Anything still typed in the box counts as one more invoice.
+    const typed = document.getElementById("invoiceInput").value.trim();
+    if(typed){ addInvoice(typed); document.getElementById("invoiceInput").value = ""; fillInvoiceDatalist(); }
+    if(selectedInvoices.length === 0){ showToast("Select at least one invoice number","error"); return; }
+    matchByInvoice(activeSheet, selectedInvoices.slice());
   }
 }
-function matchByInvoice(sheetKey, invoice, date){
+/* Loads rows for ONE OR MORE invoices in a single request (no date filter).
+   The same variant appearing in several sheet rows (same or different
+   invoices) is shown as ONE line with the combined qty; every underlying
+   sheet row is kept in `rows` so submit highlights each row correctly. */
+function matchByInvoice(sheetKey, invoices){
   document.getElementById("matchBtn").disabled = true;
   const onlyHl = document.getElementById("onlyHighlighted").checked ? "1" : "0";
-  fetch(API_URL+"?type=matchinvoice&sheet="+encodeURIComponent(sheetKey)+"&invoice="+encodeURIComponent(invoice)+"&date="+encodeURIComponent(date||"")+"&onlyHighlighted="+onlyHl)
+  const reqSheet = activeSheet;
+  fetch(API_URL+"?type=matchinvoice&sheet="+encodeURIComponent(sheetKey)+"&invoices="+encodeURIComponent(JSON.stringify(invoices))+"&onlyHighlighted="+onlyHl)
     .then(r=>r.json())
     .then(data=>{
       document.getElementById("matchBtn").disabled = false;
+      if(activeSheet !== reqSheet) return; // user switched sheet while loading
       if(!Array.isArray(data) || data.error){ showToast(data&&data.error?data.error:"Lookup failed","error"); return; }
+      const invTxt = invoices.length > 1 ? "these invoices" : "this invoice";
       if(data.length===0){
-        showToast(onlyHl==="1" ? "No highlighted (leftover) rows for this invoice" : "No items found for this invoice","warning",3200);
-        items = {}; completedRows = []; cappedFinishedRows = []; itemsLoaded = false; render(); return;
+        showToast(onlyHl==="1" ? "No highlighted (leftover) rows for "+invTxt : "No items found for "+invTxt,"warning",3200);
+        items = {}; completedRows = []; cappedFinishedRows = []; itemsLoaded = false; loadedInvoices = []; punchedQty = 0; render(); return;
       }
-      items = {}; completedRows = []; cappedFinishedRows = [];
+      items = {}; completedRows = []; cappedFinishedRows = []; punchedQty = 0;
       data.forEach(row=>{
         const k = vKey(row.variant);
-        items[k] = {
-          variant : row.variant,
-          qty     : Number(row.qty)||0,
-          physical: 0,
-          balance : Number(row.qty)||0,
-          alreadyFound: Number(row.alreadyFound)||0,
-          rowIndex: row.rowIndex
-        };
+        const q = Number(row.qty)||0;
+        const af = Number(row.alreadyFound)||0;
+        if(!items[k]){
+          items[k] = {
+            variant : row.variant,
+            qty     : 0,
+            physical: 0,
+            balance : 0,
+            alreadyFound: 0,
+            rowIndex: row.rowIndex,
+            rows    : []
+          };
+        }
+        const it = items[k];
+        it.qty += q; it.balance += q; it.alreadyFound += af;
+        it.rows.push({ rowIndex: row.rowIndex, qty: q, alreadyFound: af });
       });
+      loadedInvoices = invoices.slice();
       itemsLoaded = true;
       render();
-      showToast(data.length+" item(s) loaded","success",2200);
+      showToast(Object.keys(items).length+" item(s) loaded from "+invoices.length+" invoice(s)","success",2200);
     })
     .catch(()=>{ document.getElementById("matchBtn").disabled=false; showToast("Lookup error","error"); });
 }
@@ -853,9 +944,9 @@ function matchByDealer(dealer){
       if(!Array.isArray(data) || data.error){ showToast(data&&data.error?data.error:"Lookup failed","error"); return; }
       if(data.length===0){
         showToast(onlyHl==="1" ? "No highlighted (leftover) rows for this dealer" : "No items found for this dealer","warning",3200);
-        items = {}; itemsLoaded = false; render(); return;
+        items = {}; itemsLoaded = false; punchedQty = 0; render(); return;
       }
-      items = {}; completedRows = []; cappedFinishedRows = [];
+      items = {}; completedRows = []; cappedFinishedRows = []; punchedQty = 0;
       data.forEach(row=>{
         const k = vKey(row.variant);
         items[k] = {
@@ -1106,6 +1197,7 @@ function handleScannedVariant(variant, addQty, feedbackElId){
   beep();
   row.physical += use;
   row.balance = row.qty - row.physical;
+  punchedQty += use;   // accurate running total of scanned + matched qty
   if(feedbackElId) document.getElementById(feedbackElId).textContent="✅ "+row.variant+" — "+row.physical+"/"+row.qty;
   showToast(row.variant+" "+row.physical+"/"+row.qty,"success",1500);
 
@@ -1129,11 +1221,16 @@ function handleScannedVariant(variant, addQty, feedbackElId){
       showToast("✔ "+variant+" capped qty reached — stays flagged blue in sheet","success",2000);
     } else {
       // Normal completion: record so submit CLEARS its highlight in the sheet.
-      completedRows.push({
-        variant : row.variant,
-        rowIndex: row.rowIndex,
-        col     : row.col
-      });
+      if(row.rows){
+        // Spare/SDB: one line may cover several sheet rows — clear them all.
+        row.rows.forEach(r=>completedRows.push({ variant: row.variant, rowIndex: r.rowIndex, col: row.col }));
+      } else {
+        completedRows.push({
+          variant : row.variant,
+          rowIndex: row.rowIndex,
+          col     : row.col
+        });
+      }
       delete items[k];
       showToast("✔ "+variant+" complete — removed from list","success",1800);
     }
@@ -1146,7 +1243,7 @@ function render() {
   const keys=Object.keys(items);
   const isAlloc = (activeSheet === "allocation");
   const colspan = isAlloc ? 5 : 4;
-  document.getElementById("itemCount").textContent=keys.length;
+  document.getElementById("punchedCount").textContent=punchedQty;
   if(keys.length===0){
     document.getElementById("tbody").innerHTML=`<tr><td colspan="${colspan}"><div class="empty-state"><svg width="34" height="34" fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24"><rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8M12 17v4"/></svg><p>No items loaded yet.<br>Select a sheet, enter invoice/dealer and tap "Load Items".</p></div></td></tr>`;
     document.getElementById("tQty").textContent="0";
@@ -1214,8 +1311,7 @@ function goToPage2(){
   if(activeSheet === "allocation"){
     if(!document.getElementById("dealerInput").value.trim()){showToast("Enter Dealer Name","error");return;}
   } else {
-    if(!document.getElementById("invoiceInput").value.trim()){showToast("Enter Invoice Number","error");return;}
-    if(!document.getElementById("date").value){showToast("Select Date","error");return;}
+    if(loadedInvoices.length===0){showToast("Select invoice number(s) and tap \"Load Items\"","error");return;}
   }
   if(!itemsLoaded){showToast("Tap \"Load Items\" first","error");return;}
   goPage(2);
@@ -1226,16 +1322,13 @@ function refreshSummary(){
   if(activeSheet === "allocation"){
     identLabel = "Dealer"; identVal = document.getElementById("dealerInput").value;
   } else {
-    identLabel = "Invoice No."; identVal = document.getElementById("invoiceInput").value;
+    identLabel = loadedInvoices.length>1 ? "Invoice Nos." : "Invoice No.";
+    identVal = escHtml(loadedInvoices.join(", "));
   }
-  const dt = document.getElementById("date").value;
   let tq=0,tp=0,tb=0;
   Object.values(items).forEach(i=>{tq+=Number(i.qty)||0;tp+=Number(i.physical)||0;tb+=Number(i.balance)||0;});
 
-  let dateBlock = "";
-  if(activeSheet !== "allocation"){
-    dateBlock = `<div style="background:#f8faff;border-radius:8px;padding:10px;border:1px solid #d1daf7"><div style="font-size:9px;color:var(--muted);text-transform:uppercase;letter-spacing:.7px;margin-bottom:3px">Date</div><div style="font-weight:700;font-size:13px">${fmtDate(dt)}</div></div>`;
-  }
+  const dateBlock = "";
 
   document.getElementById("summaryBox").innerHTML=`
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:4px">
@@ -1254,8 +1347,7 @@ function checkFields(){
   if(activeSheet === "allocation"){
     if(!document.getElementById("dealerInput").value.trim()){showToast("Enter Dealer Name","error");return false;}
   } else {
-    if(!document.getElementById("invoiceInput").value.trim()){showToast("Enter Invoice Number","error");return false;}
-    if(!document.getElementById("date").value){showToast("Select Date","error");return false;}
+    if(loadedInvoices.length===0){showToast("Select invoice number(s) and tap \"Load Items\"","error");return false;}
   }
   if(!photoData){showToast("Add a confirmation photo or signature","error");return false;}
   if(!itemsLoaded){showToast("No items loaded","error");return false;}
@@ -1385,10 +1477,12 @@ function resetConfirm(){
 /* ════ DOWNLOAD BILL (Physical/Balance report) — splits into pages of 30 lines ════ */
 function downloadBill(allItemsSnapshot){
   const sheetLabel = activeSheet==="spare" ? "Spare" : activeSheet==="sdb" ? "SDB" : "Allocation";
-  const identLabel = activeSheet==="allocation" ? "Dealer" : "Invoice No.";
-  const identVal   = activeSheet==="allocation" ? document.getElementById("dealerInput").value : document.getElementById("invoiceInput").value;
-  const dt = document.getElementById("date").value;
-  const time=new Date().toLocaleTimeString("en-IN");
+  const identLabel = activeSheet==="allocation" ? "Dealer" : (loadedInvoices.length>1 ? "Invoice Nos." : "Invoice No.");
+  const identRaw   = activeSheet==="allocation" ? document.getElementById("dealerInput").value : loadedInvoices.join(", ");
+  const identVal   = activeSheet==="allocation" ? identRaw : escHtml(identRaw);
+  const now  = new Date();
+  const dt   = String(now.getDate()).padStart(2,"0")+"."+String(now.getMonth()+1).padStart(2,"0")+"."+now.getFullYear();
+  const time = now.toLocaleTimeString("en-IN");
   const photoSnap=photoData, typeSnap=confirmType;
 
   let tq=0,tp=0,tb=0,ttr=0;
@@ -1418,8 +1512,8 @@ function downloadBill(allItemsSnapshot){
       ${pageBadge}
     </div>
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:16px">
-      <div style="background:#f8faff;border-radius:7px;padding:10px;border:1px solid #d1daf7"><div style="font-size:9px;color:#64748b;text-transform:uppercase;letter-spacing:.7px;margin-bottom:3px">${identLabel}</div><div style="font-weight:700;font-size:13px">${identVal}</div></div>
-      ${activeSheet!=="allocation" ? `<div style="background:#f8faff;border-radius:7px;padding:10px;border:1px solid #d1daf7"><div style="font-size:9px;color:#64748b;text-transform:uppercase;letter-spacing:.7px;margin-bottom:3px">Date &amp; Time</div><div style="font-weight:700;font-size:13px">${fmtDate(dt)} <span style="font-size:10px;color:#64748b">${time}</span></div></div>` : `<div style="background:#f8faff;border-radius:7px;padding:10px;border:1px solid #d1daf7"><div style="font-size:9px;color:#64748b;text-transform:uppercase;letter-spacing:.7px;margin-bottom:3px">Time</div><div style="font-weight:700;font-size:13px">${time}</div></div>`}
+      <div style="background:#f8faff;border-radius:7px;padding:10px;border:1px solid #d1daf7"><div style="font-size:9px;color:#64748b;text-transform:uppercase;letter-spacing:.7px;margin-bottom:3px">${identLabel}</div><div style="font-weight:700;font-size:13px;word-break:break-word">${identVal}</div></div>
+      ${activeSheet!=="allocation" ? `<div style="background:#f8faff;border-radius:7px;padding:10px;border:1px solid #d1daf7"><div style="font-size:9px;color:#64748b;text-transform:uppercase;letter-spacing:.7px;margin-bottom:3px">Date &amp; Time</div><div style="font-weight:700;font-size:13px">${dt} <span style="font-size:10px;color:#64748b">${time}</span></div></div>` : `<div style="background:#f8faff;border-radius:7px;padding:10px;border:1px solid #d1daf7"><div style="font-size:9px;color:#64748b;text-transform:uppercase;letter-spacing:.7px;margin-bottom:3px">Time</div><div style="font-weight:700;font-size:13px">${time}</div></div>`}
     </div>
     <table style="width:100%;border-collapse:collapse;border:1px solid #e2e8f0;border-radius:8px;overflow:hidden">
       <thead><tr style="background:linear-gradient(90deg,#e8eeff,#f0f4ff)">
@@ -1453,7 +1547,7 @@ function downloadBill(allItemsSnapshot){
       const a=document.createElement("a");
       a.href=c.toDataURL("image/jpeg",.92);
       const suffix=(totalPages>1)?`_page${idx+1}`:"";
-      const safeIdent=String(identVal).replace(/[^a-zA-Z0-9]/g,"_");
+      const safeIdent=String(identRaw).replace(/[^a-zA-Z0-9]/g,"_").slice(0,60);
       a.download=`AKAI_${sheetLabel}_${safeIdent}${suffix}.jpg`;
       a.click();
       setTimeout(()=>renderPage(idx+1), 700);
@@ -1485,13 +1579,16 @@ function submitData(){
     capped  : !!i.capped,
     alreadyFound: i.alreadyFound||0,
     rowIndex: i.rowIndex,
-    col     : i.col
+    col     : i.col,
+    rows    : i.rows
   }));
 
   // Colors (all sheets): ORANGE=nothing found, GREEN=partial, BLUE=allocation
   // capped (qty>colC, priority). Bracket shows cumulative found (this pass +
   // previously found), e.g. (2) = 1 before + 1 now.
-  const highlightPayload = remainingSnapshot.map(i=>({
+  let highlightPayload, completedPayload;
+  if(isAlloc){
+  highlightPayload = remainingSnapshot.map(i=>({
     variant : i.variant,
     qty     : i.qty,
     physical: i.physical,
@@ -1513,9 +1610,29 @@ function submitData(){
   // their previous highlight so a re-search narrows down correctly. Capped
   // rows are NEVER in this list — they go through highlightPayload instead
   // so they stay BLUE with the cumulative bracket.
-  const completedPayload = completedRows.map(r=>({
+  completedPayload = completedRows.map(r=>({
     variant : r.variant, rowIndex: r.rowIndex, col: r.col
   }));
+  } else {
+    // Spare/SDB: one website line can cover several sheet rows (same variant
+    // across invoices). Hand the punched qty to those rows in sheet order:
+    // a row that is filled completely gets cleared, the rest get
+    // GREEN "qty (n)" / ORANGE exactly as before. Only the fields the server
+    // uses are sent (smaller payload = faster submit).
+    highlightPayload = [];
+    completedPayload = completedRows.map(r=>({ rowIndex: r.rowIndex }));
+    remainingSnapshot.forEach(i=>{
+      let left = Number(i.physical)||0;
+      const rows = i.rows || [{ rowIndex: i.rowIndex, qty: i.qty, alreadyFound: i.alreadyFound }];
+      rows.forEach(r=>{
+        const rq = Number(r.qty)||0;
+        const take = Math.min(left, rq);
+        left -= take;
+        if(rq > 0 && take >= rq) completedPayload.push({ rowIndex: r.rowIndex });
+        else highlightPayload.push({ rowIndex: r.rowIndex, physical: take, alreadyFound: Number(r.alreadyFound)||0 });
+      });
+    });
+  }
 
   fetch(API_URL,{
     method:"POST",
@@ -1543,7 +1660,8 @@ function submitData(){
       setTimeout(()=>{
         document.getElementById("invoiceInput").value="";
         document.getElementById("dealerInput").value="";
-        items={}; completedRows=[]; cappedFinishedRows=[]; itemsLoaded=false; render();
+        selectedInvoices=[]; loadedInvoices=[]; renderInvoiceChips(); fillInvoiceDatalist();
+        items={}; completedRows=[]; cappedFinishedRows=[]; itemsLoaded=false; punchedQty=0; render();
         document.getElementById("preview").innerHTML="";
         resetConfirm();
         goPage(1);
